@@ -1,0 +1,1161 @@
+import { useState, useEffect } from "react";
+
+const STORAGE_KEY = "haccp_v5";
+const RETENTION_DAYS = 365 * 2;
+
+async function loadRecords() {
+  try { const r = await window.storage.get(STORAGE_KEY); if (r) return JSON.parse(r.value); } catch {}
+  return {};
+}
+async function saveRecords(data) {
+  try {
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - RETENTION_DAYS);
+    const f = {}; for (const [k,v] of Object.entries(data)) { if (new Date(k)>=cutoff) f[k]=v; }
+    await window.storage.set(STORAGE_KEY, JSON.stringify(f)); return f;
+  } catch {} return data;
+}
+async function loadSettings() {
+  try { const r = await window.storage.get("haccp_settings_v2"); if (r) return JSON.parse(r.value); } catch {}
+  return {
+    company: "", facility: "",
+    staff:        ["冨永悠作","玉川","森田"],
+    knifePersons: ["玉川","富永","森田","竹島"],
+  };
+}
+async function saveSettings(s) {
+  try { await window.storage.set("haccp_settings_v2", JSON.stringify(s)); } catch {}
+}
+
+function today() { return new Date().toISOString().slice(0,10); }
+function formatDate(s) {
+  if (!s) return ""; const d = new Date(s);
+  const w=["日","月","火","水","木","金","土"];
+  return `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日（${w[d.getDay()]}）`;
+}
+function formatMonth(s) {
+  if (!s) return ""; const d = new Date(s+"01");
+  return `${d.getFullYear()}年${d.getMonth()+1}月`;
+}
+
+function tempStatus(id, val) {
+  if (val===""||val===null||val===undefined) return "none";
+  const n = parseFloat(val); if (isNaN(n)) return "none";
+  const max = { shohin:4, seihin:4, kaito:4, shitsu:20 };
+  if (!(id in max)) return "none";
+  return n <= max[id] ? "ok" : "ng";
+}
+
+const TEMP_SPOTS = [
+  { id:"shohin", label:"商品庫", max:4  },
+  { id:"seihin", label:"製品庫", max:4  },
+  { id:"kaito",  label:"解凍庫", max:4  },
+  { id:"shitsu", label:"作業室", max:20 },
+];
+
+const HEALTH_CHECK_ITEMS = [
+  { id:"h_fever",    label:"発熱なし（37.5℃未満）" },
+  { id:"h_diarrhea", label:"下痢・腹痛なし" },
+  { id:"h_wound",    label:"手指に傷・湿疹なし" },
+  { id:"h_uniform",  label:"着衣・帽子・ローラー清掃済" },
+  { id:"h_handwash", label:"規定手順での手洗い・消毒済" },
+];
+
+const TABS = [
+  { id:"daily",    label:"今日の記録",   icon:"📝" },
+  { id:"health",   label:"健康チェック", icon:"🏥" },
+  { id:"knife",    label:"刃物管理",     icon:"🔪" },
+  { id:"history",  label:"履歴・印刷",   icon:"📋" },
+  { id:"settings", label:"設定",         icon:"⚙️" },
+];
+
+function StaffSelector({ value, onChange, staffList, placeholder }) {
+  const [custom, setCustom] = useState(false);
+  const isCustom = value && !staffList.includes(value);
+
+  return (
+    <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+      {!custom && !isCustom ? (
+        <select value={value??""} onChange={e => {
+          if (e.target.value === "__custom__") { setCustom(true); onChange(""); }
+          else onChange(e.target.value);
+        }} style={{ ...S.sel, flex:1, padding:"11px 10px", fontSize:14 }}>
+          <option value="">{placeholder||"選択してください"}</option>
+          {staffList.map(n => <option key={n} value={n}>{n}</option>)}
+          <option value="__custom__">✏️ 直接入力する</option>
+        </select>
+      ) : (
+        <>
+          <input type="text" placeholder="氏名を入力" value={value??""} onChange={e=>onChange(e.target.value)}
+            style={{ ...S.textInput, flex:1 }} autoFocus />
+          <button onClick={()=>{ setCustom(false); onChange(""); }}
+            style={S.cancelBtn}>✕</button>
+        </>
+      )}
+    </div>
+  );
+}
+
+export default function App() {
+  const [tab, setTab]           = useState("daily");
+  const [records, setRecords]   = useState({});
+  const [settings, setSettings] = useState({ company:"", facility:"", staff:[], knifePersons:[] });
+  const [loading, setLoading]   = useState(true);
+  const [saved, setSaved]       = useState(false);
+  const [viewDate, setViewDate] = useState(today());
+
+  useEffect(() => {
+    Promise.all([loadRecords(), loadSettings()]).then(([r,s]) => {
+      setRecords(r); setSettings(s); setLoading(false);
+    });
+  }, []);
+
+  const getDay = d => records[d] || {};
+  const updateDay = async (date, patch) => {
+    const next = { ...records, [date]: { ...getDay(date), ...patch } };
+    const s = await saveRecords(next); setRecords(s);
+    setSaved(true); setTimeout(()=>setSaved(false), 1800);
+  };
+  const updateSettings = async s => {
+    setSettings(s); await saveSettings(s);
+    setSaved(true); setTimeout(()=>setSaved(false), 1800);
+  };
+
+  if (loading) return <div style={S.center}><Spinner/></div>;
+
+  const staffList    = settings.staff.length>0        ? settings.staff        : ["冨永悠作","玉川","森田"];
+  const knifePersons = settings.knifePersons.length>0 ? settings.knifePersons : ["玉川","富永","森田","竹島"];
+
+  return (
+    <div style={S.app}>
+      <div style={S.header}>
+        <div>
+          <div style={S.htitle}>🐟 HACCP管理記録</div>
+          <div style={S.hsub}>{settings.facility||"施設名未設定"} | {formatDate(today())}</div>
+        </div>
+        {saved && <div style={S.savedBadge}>✓ 保存</div>}
+      </div>
+
+      <div style={S.tabBar}>
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)}
+            style={{...S.tabBtn,...(tab===t.id?S.tabOn:{})}}>
+            <span style={{fontSize:18}}>{t.icon}</span>
+            <span style={{fontSize:9,marginTop:2}}>{t.label}</span>
+          </button>
+        ))}
+      </div>
+
+      <div style={S.body}>
+        {tab==="daily"    && <DailyTab    date={today()} data={getDay(today())} update={p=>updateDay(today(),p)} staffList={staffList} />}
+        {tab==="health"   && <HealthTab   date={today()} data={getDay(today())} update={p=>updateDay(today(),p)} staffList={staffList} onStaffChange={list=>updateSettings({...settings,staff:list})} />}
+        {tab==="knife"    && <KnifeTab    date={today()} data={getDay(today())} update={p=>updateDay(today(),p)} knifePersons={knifePersons} staffList={staffList} onKnifePersonsChange={list=>updateSettings({...settings,knifePersons:list})} />}
+        {tab==="history"  && <HistoryTab  records={records} viewDate={viewDate} setViewDate={setViewDate} settings={settings} staffList={staffList} knifePersons={knifePersons} />}
+        {tab==="settings" && <SettingsTab settings={settings} update={updateSettings} />}
+      </div>
+    </div>
+  );
+}
+
+const DAILY_CHECK_KEYS = [
+  "metal_before","metal_after","kigu","shisetsu",
+  "pest_machine","pest_tape","door_check","pest_normal",
+  "water_check","haisui","haiki",
+  "pri_water","pri_pest","pri_senjo",
+];
+
+function DailyTab({ date, data, update, staffList }) {
+  const d = data.daily || {};
+  const set = (k,v) => update({ daily:{...d,[k]:v} });
+
+  const allChecked = DAILY_CHECK_KEYS.every(k => d[k]);
+
+  const handleAllClear = () => {
+    const patch = { ...d };
+    DAILY_CHECK_KEYS.forEach(k => { patch[k] = true; });
+    update({ daily: patch });
+  };
+  const handleReset = () => {
+    const patch = { ...d };
+    DAILY_CHECK_KEYS.forEach(k => { delete patch[k]; });
+    update({ daily: patch });
+  };
+
+  const deviations = [];
+  TEMP_SPOTS.forEach(sp => {
+    ["300","1100"].forEach(t => {
+      const v = d[`temp_${sp.id}_${t}`];
+      if (tempStatus(sp.id,v)==="ng")
+        deviations.push(`${sp.label} ${t==="300"?"3:00":"11:00"} → ${v}℃（基準${sp.max}℃以下）`);
+    });
+  });
+
+  return (
+    <div style={S.sec}>
+      <FormBanner title="衛生管理の実施記録" date={date} />
+
+      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:4,marginTop:4}}>
+        {!allChecked ? (
+          <button onClick={handleAllClear}
+            style={{flex:1,background:"#16a34a",color:"#fff",border:"none",borderRadius:10,
+              padding:"13px",fontWeight:700,fontSize:15,cursor:"pointer",
+              boxShadow:"0 2px 6px rgba(22,163,74,0.3)"}}>
+            ✓ チェック項目を全て問題なしにする
+          </button>
+        ) : (
+          <button onClick={handleReset}
+            style={{flex:1,background:"#f1f5f9",color:"#64748b",border:"1px solid #e2e8f0",
+              borderRadius:10,padding:"11px",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+            ↺ チェックをリセットする
+          </button>
+        )}
+      </div>
+
+      {deviations.length>0 && (
+        <div style={S.alertBox}>
+          <div style={{fontWeight:700,marginBottom:4}}>⚠️ 温度逸脱あり</div>
+          {deviations.map((dv,i)=><div key={i} style={{fontSize:12}}>• {dv}</div>)}
+          <div style={{fontSize:11,marginTop:4,opacity:0.8}}>→ 下部「逸脱・是正措置」欄に対応を必ず記入</div>
+        </div>
+      )}
+
+      <SLabel icon="✍️" title="担当者" color={C.blue}/>
+      <StaffSelector value={d.staff} onChange={v=>set("staff",v)} staffList={staffList} placeholder="担当者を選択"/>
+
+      <SLabel icon="🏭" title="1. 施設・設備の衛生管理" color={C.blue}/>
+      <Block>
+        <SubHd>金属探知機</SubHd>
+        <OCheck label="作業開始前：テストピース動作確認" val={d.metal_before} onChange={v=>set("metal_before",v)}/>
+        <OCheck label="作業終了後：テストピース動作確認" val={d.metal_after}  onChange={v=>set("metal_after",v)}/>
+        <SubHd>器具（包丁・スライサー等）</SubHd>
+        <OCheck label="刃欠けなし（目視確認済）"          val={d.kigu}         onChange={v=>set("kigu",v)}/>
+        <SubHd>施設</SubHd>
+        <OCheck label="施設全体の衛生状態良好"             val={d.shisetsu}     onChange={v=>set("shisetsu",v)}/>
+      </Block>
+
+      <SLabel icon="🌡️" title="2. 温度管理（3時〜13時半の間で2回実施）" color={C.blue}/>
+      <Block>
+        {TEMP_SPOTS.map(sp=>{
+          const v3  = d[`temp_${sp.id}_300`]  ?? "";
+          const v11 = d[`temp_${sp.id}_1100`] ?? "";
+          return (
+            <div key={sp.id} style={S.tempRow}>
+              <div style={S.tempName}>
+                <div>{sp.label}</div>
+                <div style={{fontSize:10,color:"#64748b",marginTop:2}}>{sp.max}℃以下</div>
+              </div>
+              <TempIn label="3:00"  val={v3}  st={tempStatus(sp.id,v3)}  onChange={v=>set(`temp_${sp.id}_300`,v)}/>
+              <TempIn label="11:00" val={v11} st={tempStatus(sp.id,v11)} onChange={v=>set(`temp_${sp.id}_1100`,v)}/>
+            </div>
+          );
+        })}
+        <div style={{fontSize:11,color:"#94a3b8",padding:"6px 12px 10px"}}>
+          ※逸脱時→扉閉め忘れ確認→設定変更→改善なければ工務へ連絡
+        </div>
+      </Block>
+
+      <SLabel icon="💧" title="3. 水・排水および廃棄物管理" color={C.blue}/>
+      <Block>
+        <SubHd>使用水の管理</SubHd>
+        <OCheck label="水の濁り・異臭・異物なし（目視確認）" val={d.water_check} onChange={v=>set("water_check",v)}/>
+        <SubHd>排水</SubHd>
+        <OCheck label="排水溝の詰まり除去・清掃実施"          val={d.haisui}      onChange={v=>set("haisui",v)}/>
+        <SubHd>廃棄物処理</SubHd>
+        <OCheck label="魚アラ・段ボール等を分別し屋外搬出済"  val={d.haiki}       onChange={v=>set("haiki",v)}/>
+      </Block>
+
+      <SLabel icon="🐀" title="4. 防鼠・防虫対策（昆虫対策）" color={C.blue}/>
+      <Block>
+        <SubHd>捕虫機の管理</SubHd>
+        <OCheck label="捕虫機の稼働状況確認"           val={d.pest_machine}  onChange={v=>set("pest_machine",v)}/>
+        <OCheck label="捕虫テープ交換・死骸清掃確認"   val={d.pest_tape}     onChange={v=>set("pest_tape",v)}/>
+        <SubHd>侵入防止</SubHd>
+        <OCheck label="外部扉・シャッターの閉鎖確認"   val={d.door_check}    onChange={v=>set("door_check",v)}/>
+        <OCheck label="捕虫数の急増なし（異常なし）"   val={d.pest_normal}   onChange={v=>set("pest_normal",v)}/>
+      </Block>
+
+      <SLabel icon="⚠️" title="重点管理" color={C.red}/>
+      <Block alert>
+        <OCheck label="使用水の管理（確認済）"                         val={d.pri_water} onChange={v=>set("pri_water",v)}/>
+        <OCheck label="そ族・昆虫対策（確認済）"                       val={d.pri_pest}  onChange={v=>set("pri_pest",v)}/>
+        <OCheck label="生食用鮮魚介類：真水洗浄・二次汚染防止確認"   val={d.pri_senjo} onChange={v=>set("pri_senjo",v)}/>
+      </Block>
+
+      <SLabel icon="📋" title="逸脱・是正措置の記録" color={C.red}/>
+      <textarea
+        placeholder="逸脱内容・原因・是正措置・連絡先を記入（異常なければ「異常なし」）"
+        value={d.deviation??""} onChange={e=>set("deviation",e.target.value)}
+        style={{...S.textarea,minHeight:90}}/>
+
+      <SLabel icon="📝" title="特記事項（書ききれない時は別紙添付）" color={C.blue}/>
+      <textarea placeholder="特記事項を入力..."
+        value={d.note??""} onChange={e=>set("note",e.target.value)} style={S.textarea}/>
+
+      <SLabel icon="🖊️" title="確認者サイン" color={C.blue}/>
+      <StaffSelector value={d.signer} onChange={v=>set("signer",v)} staffList={staffList} placeholder="確認者を選択"/>
+    </div>
+  );
+}
+
+function HealthTab({ date, data, update, staffList, onStaffChange }) {
+  const d = data.health || {};
+  const set = (k,v) => update({ health:{...d,[k]:v} });
+
+  const [editMode, setEditMode] = useState(false);
+  const [localStaff, setLocalStaff] = useState(staffList);
+  const [newName, setNewName] = useState("");
+
+  useEffect(()=>{ setLocalStaff(staffList); }, [staffList.join(",")]);
+
+  const saveStaff = (list) => { setLocalStaff(list); onStaffChange(list); };
+  const rename    = (i, v) => { const n=[...localStaff]; n[i]=v; setLocalStaff(n); };
+  const commitRename = () => { onStaffChange(localStaff); };
+  const remove    = (i)    => saveStaff(localStaff.filter((_,idx)=>idx!==i));
+  const add       = ()     => { const n=newName.trim(); if(!n) return; saveStaff([...localStaff,n]); setNewName(""); };
+
+  const clearAll = (name) => {
+    const patch = { ...d };
+    HEALTH_CHECK_ITEMS.forEach(item => { patch[`${name}_${item.id}`] = true; });
+    patch[`${name}_checked`] = true;
+    update({ health: patch });
+  };
+  const resetAll = (name) => {
+    const patch = { ...d };
+    HEALTH_CHECK_ITEMS.forEach(item => { delete patch[`${name}_${item.id}`]; });
+    delete patch[`${name}_checked`];
+    update({ health: patch });
+  };
+
+  return (
+    <div style={S.sec}>
+      <FormBanner title="従事者健康チェック" date={date} />
+      <div style={{background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:10,
+        padding:"10px 14px",marginBottom:8,fontSize:12,color:"#92400e"}}>
+        ⚠️ 発熱・下痢・手指の傷がある場合は食品に触れる作業から外し、上長へ報告
+      </div>
+
+      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}>
+        <button onClick={()=>setEditMode(e=>!e)}
+          style={{background:editMode?"#0369a1":"#f1f5f9",color:editMode?"#fff":"#475569",
+            border:"none",borderRadius:8,padding:"6px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+          {editMode?"✓ 編集完了":"✏️ 担当者を編集"}
+        </button>
+      </div>
+
+      {editMode ? (
+        <Block>
+          <div style={{padding:"10px 14px 6px",fontSize:12,color:"#64748b",fontWeight:600}}>
+            担当者の名前変更・削除・追加
+          </div>
+          {localStaff.map((name,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8,
+              padding:"8px 14px",borderBottom:"1px solid #f1f5f9"}}>
+              <input type="text" value={name}
+                onChange={e=>rename(i,e.target.value)}
+                onBlur={commitRename}
+                style={{...S.textInput,flex:1,padding:"8px 10px",fontSize:14}}/>
+              <button onClick={()=>remove(i)}
+                style={{background:"#fee2e2",color:"#dc2626",border:"none",borderRadius:8,
+                  padding:"8px 12px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+                削除
+              </button>
+            </div>
+          ))}
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px"}}>
+            <input type="text" placeholder="新しい担当者名を入力" value={newName}
+              onChange={e=>setNewName(e.target.value)}
+              onKeyDown={e=>{ if(e.key==="Enter") add(); }}
+              style={{...S.textInput,flex:1,padding:"8px 10px",fontSize:14}}/>
+            <button onClick={add}
+              style={{background:C.blue,color:"#fff",border:"none",borderRadius:8,
+                padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+              ＋追加
+            </button>
+          </div>
+        </Block>
+      ) : (
+        localStaff.map(name => {
+          const allOk = HEALTH_CHECK_ITEMS.every(item => d[`${name}_${item.id}`]);
+          const anyNG = HEALTH_CHECK_ITEMS.some(item =>
+            ["h_fever","h_diarrhea","h_wound"].includes(item.id) && d[`${name}_checked`] && !d[`${name}_${item.id}`]
+          );
+          return (
+            <div key={name} style={{
+              ...S.healthCard,
+              border: allOk ? "2px solid #16a34a" : anyNG ? "2px solid #dc2626" : "2px solid #e2e8f0"
+            }}>
+              <div style={S.healthCardHeader}>
+                <span style={{fontWeight:700,fontSize:15}}>{name}</span>
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  {allOk && <Chip c="#dcfce7" t="#16a34a" l="✓ 問題なし"/>}
+                  {anyNG && <Chip c="#fee2e2" t="#dc2626" l="⚠ 要対応"/>}
+                  {!allOk ? (
+                    <button onClick={()=>clearAll(name)}
+                      style={{background:"#16a34a",color:"#fff",border:"none",borderRadius:20,
+                        padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                      ✓ 全て問題なし
+                    </button>
+                  ) : (
+                    <button onClick={()=>resetAll(name)}
+                      style={{background:"#f1f5f9",color:"#64748b",border:"none",borderRadius:20,
+                        padding:"5px 12px",fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}}>
+                      リセット
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {HEALTH_CHECK_ITEMS.map(item=>(
+                <OCheck key={item.id} label={item.label}
+                  val={d[`${name}_${item.id}`]}
+                  onChange={v=>{ set(`${name}_${item.id}`,v); set(`${name}_checked`,true); }}/>
+              ))}
+
+              <div style={{padding:"8px 16px 12px",borderTop:"1px solid #f1f5f9"}}>
+                <input type="text" placeholder="備考（傷の状態・服薬等）"
+                  value={d[`${name}_note`]??""} onChange={e=>set(`${name}_note`,e.target.value)}
+                  style={{...S.textInput,fontSize:13,padding:"8px 12px"}}/>
+              </div>
+            </div>
+          );
+        })
+      )}
+
+      <SLabel icon="🖊️" title="責任者確認" color={C.blue}/>
+      <StaffSelector value={d.manager} onChange={v=>set("manager",v)} staffList={localStaff} placeholder="責任者を選択"/>
+
+      <div style={{marginTop:10,display:"flex",justifyContent:"center"}}>
+        <div onClick={()=>set("confirmed",!d.confirmed)} style={d.confirmed?S.stampOn:S.stampOff}>
+          {d.confirmed?<>確認済<br/>✓</>:<>タップして<br/>確認</>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KnifeTab({ date, data, update, knifePersons, staffList, onKnifePersonsChange }) {
+  const d = data.knife || {};
+  const set = (k,v) => update({ knife:{...d,[k]:v} });
+
+  const [editMode, setEditMode] = useState(false);
+  const [localPersons, setLocalPersons] = useState(knifePersons);
+  const [newName, setNewName] = useState("");
+
+  useEffect(()=>{ setLocalPersons(knifePersons); }, [knifePersons.join(",")]);
+
+  const savePeople = (list) => { setLocalPersons(list); onKnifePersonsChange(list); };
+  const renamePerson = (idx, val) => { const next = [...localPersons]; next[idx] = val; setLocalPersons(next); };
+  const commitRename = () => { onKnifePersonsChange(localPersons); };
+  const removePerson = (idx) => { savePeople(localPersons.filter((_,i)=>i!==idx)); };
+  const addPerson    = () => { const n = newName.trim(); if (!n) return; savePeople([...localPersons, n]); setNewName(""); };
+
+  return (
+    <div style={S.sec}>
+      <FormBanner title="刃物管理表" date={date} />
+
+      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:6}}>
+        <button onClick={()=>setEditMode(e=>!e)}
+          style={{background:editMode?"#0369a1":"#f1f5f9",color:editMode?"#fff":"#475569",
+            border:"none",borderRadius:8,padding:"6px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+          {editMode?"✓ 編集完了":"✏️ 担当者を編集"}
+        </button>
+      </div>
+
+      {editMode ? (
+        <Block>
+          <div style={{padding:"10px 14px 6px",fontSize:12,color:"#64748b",fontWeight:600}}>担当者の並び替え・名前変更・削除</div>
+          {localPersons.map((p,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",borderBottom:"1px solid #f1f5f9"}}>
+              <input type="text" value={p}
+                onChange={e=>renamePerson(i,e.target.value)}
+                onBlur={commitRename}
+                style={{...S.textInput,flex:1,padding:"8px 10px",fontSize:14}}/>
+              <button onClick={()=>removePerson(i)}
+                style={{background:"#fee2e2",color:"#dc2626",border:"none",borderRadius:8,
+                  padding:"8px 12px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+                削除
+              </button>
+            </div>
+          ))}
+          <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px"}}>
+            <input type="text" placeholder="新しい担当者名を入力" value={newName}
+              onChange={e=>setNewName(e.target.value)}
+              onKeyDown={e=>{ if(e.key==="Enter") addPerson(); }}
+              style={{...S.textInput,flex:1,padding:"8px 10px",fontSize:14}}/>
+            <button onClick={addPerson}
+              style={{background:C.blue,color:"#fff",border:"none",borderRadius:8,
+                padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+              ＋追加
+            </button>
+          </div>
+        </Block>
+      ) : (
+        <Block>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",
+            background:"#f1f5f9",padding:"8px 0",borderBottom:"2px solid #e2e8f0"}}>
+            {["担当者","作業前","終了時"].map(h=><div key={h} style={S.th}>{h}</div>)}
+          </div>
+          {localPersons.map(p=>(
+            <div key={p} style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",
+              borderBottom:"1px solid #f1f5f9",alignItems:"center"}}>
+              <div style={S.tdName}>加工室<br/><b>{p}</b></div>
+              {["before","after"].map(t=>(
+                <div key={t} style={{padding:"8px 6px",textAlign:"center"}}>
+                  <select value={d[`${p}_${t}`]??""} onChange={e=>set(`${p}_${t}`,e.target.value)} style={S.sel}>
+                    <option value="">—</option>
+                    <option value="○">○ 確認済</option>
+                    <option value="×">× 異常あり</option>
+                    <option value="-">－ 未使用</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+          ))}
+        </Block>
+      )}
+
+      <SLabel icon="📝" title="備考（刃こぼれ・紛失・是正措置）" color={C.blue}/>
+      <textarea placeholder="欠損発見時：作業停止→破片捜索→出荷保留→上長報告の経緯を記入"
+        value={d.note??""} onChange={e=>set("note",e.target.value)}
+        style={{...S.textarea,minHeight:90}}/>
+
+      <SLabel icon="🖊️" title="管理者" color={C.blue}/>
+      <StaffSelector value={d.manager} onChange={v=>set("manager",v)} staffList={staffList} placeholder="管理者を選択"/>
+    </div>
+  );
+}
+
+function HistoryTab({ records, viewDate, setViewDate, settings, staffList, knifePersons }) {
+  const [printMonth, setPrintMonth] = useState(today().slice(0,7));
+  const [showPrint, setShowPrint]   = useState(false);
+  const dates = Object.keys(records).sort().reverse();
+  const monthDates = Object.keys(records).filter(d=>d.startsWith(printMonth)).sort();
+
+  const handlePrint = () => {
+    setShowPrint(true);
+    setTimeout(()=>{ window.print(); setShowPrint(false); }, 300);
+  };
+
+  const handleExportCSV = () => {
+    const rows = [];
+    const tempHeaders = TEMP_SPOTS.flatMap(sp=>[`${sp.label}_3時`, `${sp.label}_11時`]);
+    const checkHeaders = [
+      "金属探知機_前","金属探知機_後","器具確認","使用水","排水溝","廃棄物",
+      "捕虫機稼働","捕虫テープ","扉閉鎖","捕虫数",
+      "重点_使用水","重点_そ虫","重点_鮮魚洗浄",
+    ];
+    const healthHeaders = staffList.flatMap(n=>[`健康_${n}`]);
+    const knifeHeaders  = knifePersons.flatMap(p=>[`刃物_${p}_前`,`刃物_${p}_後`]);
+
+    rows.push([
+      "日付","担当者",
+      ...tempHeaders,
+      ...checkHeaders,
+      "健康_責任者","健康_確認",
+      ...healthHeaders,
+      ...knifeHeaders,
+      "刃物_管理者",
+      "逸脱・是正措置","特記事項","確認者"
+    ].join(","));
+
+    monthDates.forEach(dt => {
+      const dl = records[dt]?.daily   || {};
+      const hl = records[dt]?.health  || {};
+      const kl = records[dt]?.knife   || {};
+      const cv = v => v ? "○" : "";
+
+      const tempVals = TEMP_SPOTS.flatMap(sp=>[
+        dl[`temp_${sp.id}_300`]  ?? "",
+        dl[`temp_${sp.id}_1100`] ?? "",
+      ]);
+      const checkVals = [
+        cv(dl.metal_before), cv(dl.metal_after), cv(dl.kigu),
+        cv(dl.water_check), cv(dl.haisui), cv(dl.haiki),
+        cv(dl.pest_machine), cv(dl.pest_tape), cv(dl.door_check), cv(dl.pest_normal),
+        cv(dl.pri_water), cv(dl.pri_pest), cv(dl.pri_senjo),
+      ];
+      const healthVals = staffList.map(n =>
+        HEALTH_CHECK_ITEMS.every(item=>hl[`${n}_${item.id}`]) ? "○" : ""
+      );
+      const knifeVals = knifePersons.flatMap(p=>[
+        kl[`${p}_before`]||"", kl[`${p}_after`]||"",
+      ]);
+
+      const esc = v => `"${String(v??'').replace(/"/g,'""')}"`;
+
+      rows.push([
+        dt,
+        esc(dl.staff||""),
+        ...tempVals,
+        ...checkVals,
+        esc(hl.manager||""),
+        cv(hl.confirmed),
+        ...healthVals,
+        ...knifeVals,
+        esc(kl.manager||""),
+        esc(dl.deviation||""),
+        esc(dl.note||""),
+        esc(dl.signer||""),
+      ].join(","));
+    });
+
+    const csv  = "\uFEFF" + rows.join("\n");
+    const blob = new Blob([csv], { type:"text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    const ym   = printMonth.replace("-","");
+    a.href     = url;
+    a.download = `HACCP記録_${settings.facility||"施設"}_${ym}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleBackup = () => {
+    const json = JSON.stringify({ records, settings, exportedAt: new Date().toISOString() }, null, 2);
+    const blob = new Blob([json], { type:"application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `HACCP_バックアップ_${today()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const d = records[viewDate];
+
+  if (showPrint) return (
+    <PrintView month={printMonth} dates={monthDates} records={records}
+      settings={settings} staffList={staffList} knifePersons={knifePersons}/>
+  );
+
+  return (
+    <div style={S.sec}>
+      <div style={{background:"#f0f9ff",border:"1px solid #bae6fd",borderRadius:12,padding:14,marginTop:10,marginBottom:4}}>
+        <div style={{fontWeight:700,fontSize:14,color:C.blue,marginBottom:10}}>📅 月を選択</div>
+        <input type="month" value={printMonth} onChange={e=>setPrintMonth(e.target.value)}
+          style={{...S.textInput,marginBottom:10}}/>
+
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button onClick={handlePrint}
+            style={{flex:1,background:C.blue,color:"#fff",border:"none",borderRadius:10,
+              padding:"12px 8px",fontWeight:700,fontSize:13,cursor:"pointer",minWidth:100}}>
+            🖨️ 印刷・PDF
+          </button>
+          <button onClick={handleExportCSV}
+            style={{flex:1,background:"#059669",color:"#fff",border:"none",borderRadius:10,
+              padding:"12px 8px",fontWeight:700,fontSize:13,cursor:"pointer",minWidth:100}}>
+            📊 CSV保存
+          </button>
+        </div>
+        <div style={{fontSize:11,color:"#64748b",marginTop:8}}>
+          ※ 印刷後、管理者が手書きで確認印を押してください<br/>
+          ※ CSVはGoogle Driveに保存してバックアップを推奨
+        </div>
+      </div>
+
+      <div style={{background:"#fff7ed",border:"1px solid #fed7aa",borderRadius:12,padding:14,marginBottom:4}}>
+        <div style={{fontWeight:700,fontSize:13,color:"#c2410c",marginBottom:6}}>🛡️ 全データバックアップ</div>
+        <div style={{fontSize:12,color:"#92400e",marginBottom:10}}>
+          全期間のデータをJSONファイルで保存します。<br/>
+          月1回Google Driveに保存することを推奨します。
+        </div>
+        <button onClick={handleBackup}
+          style={{width:"100%",background:"#ea580c",color:"#fff",border:"none",borderRadius:10,
+            padding:"12px",fontWeight:700,fontSize:14,cursor:"pointer"}}>
+          💾 全データをバックアップ保存
+        </button>
+        <div style={{fontSize:11,color:"#92400e",marginTop:6}}>
+          ※ ダウンロード後、iPhoneの「ファイル」→Google Driveに移動してください
+        </div>
+      </div>
+
+      <SLabel icon="📅" title="日付を選択して内容確認" color={C.blue}/>
+      <input type="date" value={viewDate} onChange={e=>setViewDate(e.target.value)} style={S.textInput}/>
+
+      {d ? (
+        <>
+          <HistBlock title="🌡️ 温度管理">
+            {TEMP_SPOTS.map(sp=>{
+              const v3  = d.daily?.[`temp_${sp.id}_300`];
+              const v11 = d.daily?.[`temp_${sp.id}_1100`];
+              return (
+                <div key={sp.id} style={S.hrow}>
+                  <span style={{fontWeight:600,minWidth:65}}>{sp.label}</span>
+                  <span>
+                    <TBadge l="3時"  v={v3}  st={tempStatus(sp.id,v3)}/>
+                    <TBadge l="11時" v={v11} st={tempStatus(sp.id,v11)}/>
+                  </span>
+                </div>
+              );
+            })}
+          </HistBlock>
+
+          <HistBlock title="⚠️ 重点管理">
+            {[{k:"pri_water",l:"使用水管理"},{k:"pri_pest",l:"そ族・昆虫対策"},{k:"pri_senjo",l:"生食用鮮魚介類洗浄"}].map(c=>(
+              <div key={c.k} style={S.hrow}>
+                <span>{c.l}</span>
+                <span style={{fontWeight:700,color:d.daily?.[c.k]?"#16a34a":"#dc2626"}}>{d.daily?.[c.k]?"○":"未"}</span>
+              </div>
+            ))}
+          </HistBlock>
+
+          <HistBlock title="🏥 健康チェック（責任者確認）">
+            {staffList.map(name=>{
+              const allOk = HEALTH_CHECK_ITEMS.every(item=>d.health?.[`${name}_${item.id}`]);
+              return (
+                <div key={name} style={S.hrow}>
+                  <span>{name}</span>
+                  <span style={{fontWeight:700,color:allOk?"#16a34a":"#94a3b8"}}>{allOk?"✓ 問題なし":"—"}</span>
+                </div>
+              );
+            })}
+            <div style={{...S.hrow,borderBottom:"none",marginTop:4}}>
+              <span style={{color:"#64748b"}}>責任者</span>
+              <span style={{fontWeight:600}}>{d.health?.manager||"未入力"} {d.health?.confirmed?"✓":"—"}</span>
+            </div>
+          </HistBlock>
+
+          <HistBlock title="🔪 刃物管理">
+            {knifePersons.map(p=>(
+              <div key={p} style={S.hrow}>
+                <span>{p}</span>
+                <span>前:{d.knife?.[`${p}_before`]||"—"} / 後:{d.knife?.[`${p}_after`]||"—"}</span>
+              </div>
+            ))}
+          </HistBlock>
+
+          {(d.daily?.deviation||d.daily?.note) && (
+            <HistBlock title="📋 逸脱・特記事項">
+              {d.daily?.deviation && <p style={{fontSize:13,color:"#dc2626",margin:"0 0 6px",lineHeight:1.6}}>【是正】{d.daily.deviation}</p>}
+              {d.daily?.note      && <p style={{fontSize:13,color:"#334155",margin:0,lineHeight:1.6}}>【特記】{d.daily.note}</p>}
+            </HistBlock>
+          )}
+        </>
+      ) : (
+        <div style={S.nodata}>この日の記録はありません</div>
+      )}
+
+      <SLabel icon="📊" title="記録一覧" color={C.blue} sub={`${dates.length}日分保存中`}/>
+      <Block>
+        {dates.length===0
+          ? <div style={{color:"#94a3b8",textAlign:"center",padding:16}}>記録なし</div>
+          : dates.slice(0,40).map(dt=>{
+            const r = records[dt];
+            const tempNG = TEMP_SPOTS.some(sp=>
+              tempStatus(sp.id,r?.daily?.[`temp_${sp.id}_300`])==="ng"||
+              tempStatus(sp.id,r?.daily?.[`temp_${sp.id}_1100`])==="ng"
+            );
+            return (
+              <div key={dt} onClick={()=>setViewDate(dt)}
+                style={{...S.listRow,background:dt===viewDate?"#eff6ff":"#fff"}}>
+                <span style={{fontWeight:600,fontSize:13}}>{formatDate(dt)}</span>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  {r?.daily?.signer       && <Chip c="#dbeafe" t="#1d4ed8" l="衛生✓"/>}
+                  {r?.health?.confirmed   && <Chip c="#dcfce7" t="#16a34a" l="健康✓"/>}
+                  {r?.knife?.manager      && <Chip c="#e0e7ff" t="#4338ca" l="刃物✓"/>}
+                  {tempNG                 && <Chip c="#fee2e2" t="#dc2626" l="⚠温度"/>}
+                  {r?.daily?.deviation    && <Chip c="#fef3c7" t="#d97706" l="逸脱記録"/>}
+                </div>
+              </div>
+            );
+          })
+        }
+      </Block>
+    </div>
+  );
+}
+
+function SettingsTab({ settings, update }) {
+  const [company,  setCompany]  = useState(settings.company);
+  const [facility, setFacility] = useState(settings.facility);
+  const [staffStr, setStaffStr] = useState((settings.staff||[]).join("\n"));
+  const [knifeStr, setKnifeStr] = useState((settings.knifePersons||[]).join("\n"));
+
+  const handleSave = () => {
+    update({
+      company,
+      facility,
+      staff:        staffStr.split("\n").map(s=>s.trim()).filter(Boolean),
+      knifePersons: knifeStr.split("\n").map(s=>s.trim()).filter(Boolean),
+    });
+  };
+
+  return (
+    <div style={S.sec}>
+      <FormBanner title="設定" date={today()} />
+
+      <SLabel icon="🏢" title="会社名" color={C.blue}/>
+      <input type="text" placeholder="例：株式会社〇〇水産"
+        value={company} onChange={e=>setCompany(e.target.value)} style={S.textInput}/>
+
+      <SLabel icon="🏭" title="施設名" color={C.blue}/>
+      <input type="text" placeholder="例：〇〇加工場"
+        value={facility} onChange={e=>setFacility(e.target.value)} style={S.textInput}/>
+
+      <SLabel icon="👥" title="担当者・確認者マスタ（1行1名）" color={C.blue}
+        sub="衛生管理・健康チェック・刃物管理の選択肢に使用"/>
+      <div style={{fontSize:12,color:"#64748b",marginBottom:6}}>
+        ここに追加すると各タブの選択肢に反映されます
+      </div>
+      <textarea placeholder={"冨永悠作\n玉川\n森田"}
+        value={staffStr} onChange={e=>setStaffStr(e.target.value)}
+        style={{...S.textarea,minHeight:110}}/>
+
+      <SLabel icon="🔪" title="刃物管理 担当者マスタ（1行1名）" color={C.blue}
+        sub="刃物管理表の行に使用"/>
+      <div style={{fontSize:12,color:"#64748b",marginBottom:6}}>
+        ここを変更すると刃物管理タブの担当者行が変わります
+      </div>
+      <textarea placeholder={"玉川\n富永\n森田\n竹島"}
+        value={knifeStr} onChange={e=>setKnifeStr(e.target.value)}
+        style={{...S.textarea,minHeight:110}}/>
+
+      <button onClick={handleSave}
+        style={{width:"100%",background:C.blue,color:"#fff",border:"none",
+          borderRadius:12,padding:"14px",fontWeight:700,fontSize:16,cursor:"pointer",marginTop:14}}>
+        保存する
+      </button>
+      <div style={{fontSize:11,color:"#94a3b8",textAlign:"center",marginTop:8}}>
+        ※ 設定はこのブラウザ（ストレージ）に保存されます
+      </div>
+    </div>
+  );
+}
+
+function PrintView({ month, dates, records, settings, staffList, knifePersons }) {
+  const ps = {
+    page:  { fontFamily:"'Hiragino Kaku Gothic ProN','Noto Sans JP',sans-serif", fontSize:10, color:"#000", padding:"10mm 8mm", maxWidth:"190mm", margin:"0 auto" },
+    title: { fontSize:15, fontWeight:700, textAlign:"center", marginBottom:3 },
+    sub:   { fontSize:10, textAlign:"center", marginBottom:8, color:"#444" },
+    meta:  { display:"flex", justifyContent:"space-between", marginBottom:6, fontSize:10 },
+    tbl:   { width:"100%", borderCollapse:"collapse", fontSize:9, marginBottom:8 },
+    th:    { border:"1px solid #000", background:"#e8f4f8", padding:"3px 3px", textAlign:"center", fontWeight:700 },
+    td:    { border:"1px solid #000", padding:"3px 3px", textAlign:"center" },
+    tdL:   { border:"1px solid #000", padding:"3px 5px", textAlign:"left" },
+    sec:   { marginBottom:10 },
+    stitle:{ fontWeight:700, fontSize:11, borderBottom:"2px solid #000", marginBottom:3, paddingBottom:2 },
+    sign:  { display:"flex", gap:16, marginTop:14, justifyContent:"flex-end" },
+    sBox:  { border:"1px solid #000", padding:"4px 14px", textAlign:"center" },
+    ng:    { background:"#fee2e2", color:"#dc2626", fontWeight:700 },
+  };
+  const cv = v => v ? "○" : "";
+  return (
+    <div style={ps.page}>
+      <style>{`@media print { @page { size:A4; margin:10mm; } body { print-color-adjust:exact; } }`}</style>
+      <div style={ps.title}>【衛生管理の実施記録】</div>
+      <div style={ps.sub}>{settings.company}　{settings.facility}　{formatMonth(month)}</div>
+      <div style={ps.meta}>
+        <span>2021.6作成　2022.1.13改定①　2024.5.20改定②　2025.1.21改定③</span>
+        <span>保存期間：2年</span>
+      </div>
+
+      <div style={ps.sec}>
+        <div style={ps.stitle}>■ 温度管理記録（商品庫・製品庫・解凍庫 4℃以下 / 作業室 20℃以下）</div>
+        <table style={ps.tbl}>
+          <thead><tr>
+            <th style={ps.th}>日</th>
+            {TEMP_SPOTS.flatMap(sp=>[
+              <th key={sp.id+"3"}  style={ps.th}>{sp.label}<br/>3:00</th>,
+              <th key={sp.id+"11"} style={ps.th}>{sp.label}<br/>11:00</th>,
+            ])}
+            <th style={ps.th}>担当者</th>
+          </tr></thead>
+          <tbody>
+            {dates.map(dt=>{
+              const r=records[dt]?.daily||{};
+              return (
+                <tr key={dt}>
+                  <td style={ps.td}>{new Date(dt).getDate()}</td>
+                  {TEMP_SPOTS.flatMap(sp=>["300","1100"].map(t=>{
+                    const v=r[`temp_${sp.id}_${t}`];
+                    const ng=tempStatus(sp.id,v)==="ng";
+                    return <td key={sp.id+t} style={{...ps.td,...(ng?ps.ng:{})}}>{v?`${v}℃`:""}</td>;
+                  }))}
+                  <td style={ps.td}>{r.staff||""}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={ps.sec}>
+        <div style={ps.stitle}>■ 衛生管理チェック</div>
+        <table style={ps.tbl}>
+          <thead><tr>
+            <th style={ps.th}>日</th>
+            <th style={ps.th}>金属探知機前</th><th style={ps.th}>金属探知機後</th>
+            <th style={ps.th}>器具確認</th>
+            <th style={ps.th}>使用水</th><th style={ps.th}>排水溝</th><th style={ps.th}>廃棄物</th>
+            <th style={ps.th}>捕虫機</th><th style={ps.th}>捕虫テープ</th>
+            <th style={ps.th}>扉閉鎖</th><th style={ps.th}>捕虫数</th>
+            <th style={ps.th}>重点:水</th><th style={ps.th}>重点:そ虫</th><th style={ps.th}>重点:鮮魚</th>
+          </tr></thead>
+          <tbody>
+            {dates.map(dt=>{
+              const r=records[dt]?.daily||{};
+              return (
+                <tr key={dt}>
+                  <td style={ps.td}>{new Date(dt).getDate()}</td>
+                  <td style={ps.td}>{cv(r.metal_before)}</td>
+                  <td style={ps.td}>{cv(r.metal_after)}</td>
+                  <td style={ps.td}>{cv(r.kigu)}</td>
+                  <td style={ps.td}>{cv(r.water_check)}</td>
+                  <td style={ps.td}>{cv(r.haisui)}</td>
+                  <td style={ps.td}>{cv(r.haiki)}</td>
+                  <td style={ps.td}>{cv(r.pest_machine)}</td>
+                  <td style={ps.td}>{cv(r.pest_tape)}</td>
+                  <td style={ps.td}>{cv(r.door_check)}</td>
+                  <td style={ps.td}>{cv(r.pest_normal)}</td>
+                  <td style={ps.td}>{cv(r.pri_water)}</td>
+                  <td style={ps.td}>{cv(r.pri_pest)}</td>
+                  <td style={ps.td}>{cv(r.pri_senjo)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={ps.sec}>
+        <div style={ps.stitle}>■ 従事者健康チェック（責任者確認）</div>
+        <table style={ps.tbl}>
+          <thead><tr>
+            <th style={ps.th}>日</th>
+            {staffList.map(n=><th key={n} style={ps.th}>{n}</th>)}
+            <th style={ps.th}>責任者</th>
+            <th style={ps.th}>確認</th>
+          </tr></thead>
+          <tbody>
+            {dates.map(dt=>{
+              const r=records[dt]?.health||{};
+              return (
+                <tr key={dt}>
+                  <td style={ps.td}>{new Date(dt).getDate()}</td>
+                  {staffList.map(name=>{
+                    const ok=HEALTH_CHECK_ITEMS.every(item=>r[`${name}_${item.id}`]);
+                    return <td key={name} style={{...ps.td,...(ok?{color:"#16a34a"}:{}),fontWeight:ok?700:400}}>{ok?"○":""}</td>;
+                  })}
+                  <td style={ps.td}>{r.manager||""}</td>
+                  <td style={ps.td}>{r.confirmed?"✓":""}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={ps.sec}>
+        <div style={ps.stitle}>■ 刃物管理</div>
+        <table style={ps.tbl}>
+          <thead><tr>
+            <th style={ps.th}>日</th>
+            {knifePersons.flatMap(p=>[
+              <th key={p+"b"} style={ps.th}>{p}<br/>作業前</th>,
+              <th key={p+"a"} style={ps.th}>{p}<br/>終了時</th>,
+            ])}
+            <th style={ps.th}>管理者</th>
+          </tr></thead>
+          <tbody>
+            {dates.map(dt=>{
+              const r=records[dt]?.knife||{};
+              return (
+                <tr key={dt}>
+                  <td style={ps.td}>{new Date(dt).getDate()}</td>
+                  {knifePersons.flatMap(p=>[
+                    <td key={p+"b"} style={ps.td}>{r[`${p}_before`]||""}</td>,
+                    <td key={p+"a"} style={ps.td}>{r[`${p}_after`]||""}</td>,
+                  ])}
+                  <td style={ps.td}>{r.manager||""}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={ps.sec}>
+        <div style={ps.stitle}>■ 逸脱・是正措置・特記事項</div>
+        <table style={ps.tbl}>
+          <thead><tr>
+            <th style={{...ps.th,width:"8%"}}>日</th>
+            <th style={{...ps.th,width:"46%"}}>逸脱・是正措置</th>
+            <th style={{...ps.th,width:"46%"}}>特記事項</th>
+          </tr></thead>
+          <tbody>
+            {dates.filter(dt=>records[dt]?.daily?.deviation||records[dt]?.daily?.note).map(dt=>(
+              <tr key={dt}>
+                <td style={ps.td}>{new Date(dt).getDate()}日</td>
+                <td style={ps.tdL}>{records[dt]?.daily?.deviation||""}</td>
+                <td style={ps.tdL}>{records[dt]?.daily?.note||""}</td>
+              </tr>
+            ))}
+            {[...Array(3)].map((_,i)=>(
+              <tr key={"e"+i}><td style={ps.td}>&nbsp;</td><td style={ps.tdL}>&nbsp;</td><td style={ps.tdL}>&nbsp;</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={ps.sign}>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:9,marginBottom:3}}>確認者サイン</div>
+          <div style={{...ps.sBox,width:120,height:36}}></div>
+        </div>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:9,marginBottom:3}}>管理者確認印</div>
+          <div style={{...ps.sBox,width:80,height:36}}></div>
+        </div>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:9,marginBottom:3}}>確認日</div>
+          <div style={{...ps.sBox,width:110,height:36,lineHeight:"36px",fontSize:10}}>　年　月　日</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FormBanner({ title, date }) {
+  return (
+    <div style={{background:"linear-gradient(135deg,#0c4a6e,#0369a1)",borderRadius:10,padding:"12px 16px",marginBottom:6,marginTop:8}}>
+      <div style={{color:"#fff",fontWeight:700,fontSize:15}}>【{title}】</div>
+      <div style={{color:"#bae6fd",fontSize:11,marginTop:2}}>{formatDate(date)}</div>
+    </div>
+  );
+}
+
+const C = { blue:"#0369a1", red:"#dc2626" };
+
+function SLabel({ icon, title, color, sub }) {
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:6,marginTop:18,marginBottom:6}}>
+      <span style={{fontSize:15}}>{icon}</span>
+      <span style={{fontSize:13,fontWeight:700,color}}>{title}</span>
+      {sub&&<span style={{fontSize:10,color:"#94a3b8",marginLeft:"auto"}}>{sub}</span>}
+    </div>
+  );
+}
+
+function Block({ children, alert }) {
+  return (
+    <div style={{background:"#fff",borderRadius:12,overflow:"hidden",
+      boxShadow:alert?"0 0 0 2px #dc2626,0 2px 8px rgba(220,38,38,0.08)":"0 1px 4px rgba(0,0,0,0.08)"}}>
+      {children}
+    </div>
+  );
+}
+
+function SubHd({ children }) {
+  return (
+    <div style={{background:"#f1f5f9",padding:"6px 16px",fontSize:11,color:"#475569",fontWeight:700,borderTop:"1px solid #e2e8f0",borderBottom:"1px solid #e2e8f0"}}>
+      {children}
+    </div>
+  );
+}
+
+function OCheck({ label, val, onChange }) {
+  const on = !!val;
+  return (
+    <div onClick={()=>onChange(!on)}
+      style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",
+        borderBottom:"1px solid #f1f5f9",cursor:"pointer",userSelect:"none",
+        background:on?"#f0fdf4":"#fff",transition:"background 0.15s"}}>
+      <div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,
+        border:on?"2px solid #16a34a":"2px solid #cbd5e1",
+        display:"flex",alignItems:"center",justifyContent:"center",
+        color:on?"#16a34a":"#cbd5e1",fontSize:20,fontWeight:700}}>
+        {on?"○":""}
+      </div>
+      <span style={{fontSize:14,color:on?"#0f172a":"#64748b"}}>{label}</span>
+    </div>
+  );
+}
+
+function TempIn({ label, val, st, onChange }) {
+  const col = st==="ng"?"#dc2626":st==="ok"?"#16a34a":"#0f172a";
+  const bg  = st==="ng"?"#fef2f2":st==="ok"?"#f0fdf4":"#f8fafc";
+  // マイナス・小数点途中入力を許容しつつ、不正文字は弾く
+  const handleChange = (e) => {
+    const v = e.target.value;
+    // 許可：数字・マイナス（先頭のみ）・小数点1つ
+    if (v === "" || v === "-" || /^-?\d*\.?\d*$/.test(v)) {
+      onChange(v);
+    }
+  };
+  return (
+    <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",padding:"8px 4px"}}>
+      <div style={{fontSize:11,color:"#64748b",marginBottom:4}}>{label}</div>
+      <div style={{display:"flex",alignItems:"center",gap:2}}>
+        <input
+          type="text"
+          inputMode="decimal"
+          placeholder="—"
+          value={val}
+          onChange={handleChange}
+          style={{width:60,padding:"8px 4px",borderRadius:8,textAlign:"center",
+            border:st==="ng"?"2px solid #dc2626":"1.5px solid #e2e8f0",
+            fontSize:16,fontWeight:700,color:col,background:bg,outline:"none"}}/>
+        <span style={{fontSize:12,color:"#64748b"}}>℃</span>
+      </div>
+      {st==="ng"&&<div style={{fontSize:10,color:"#dc2626",marginTop:2}}>⚠逸脱</div>}
+    </div>
+  );
+}
+
+function TBadge({ l, v, st }) {
+  const col = st==="ng"?"#dc2626":st==="ok"?"#16a34a":"#94a3b8";
+  return <span style={{marginLeft:8,fontSize:13,color:col,fontWeight:st!=="none"?600:400}}>
+    {l}:{v?`${v}℃`:"—"}{st==="ng"?" ⚠":""}
+  </span>;
+}
+
+function HistBlock({ title, children }) {
+  return (
+    <div style={{background:"#fff",borderRadius:12,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:8,padding:12}}>
+      <div style={{fontSize:13,fontWeight:700,color:C.blue,marginBottom:8}}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function Chip({ c, t, l }) {
+  return <span style={{background:c,color:t,borderRadius:10,padding:"2px 7px",fontSize:11,fontWeight:700}}>{l}</span>;
+}
+
+function Spinner() {
+  return (
+    <>
+      <div style={{width:40,height:40,borderRadius:"50%",border:"3px solid #e2e8f0",borderTopColor:"#0ea5e9",animation:"spin 0.8s linear infinite"}}/>
+      <p style={{color:"#64748b",marginTop:14,fontSize:14}}>読み込み中…</p>
+    </>
+  );
+}
+
+const S = {
+  app:     { maxWidth:480, margin:"0 auto", minHeight:"100vh", background:"#f8fafc", paddingBottom:80, fontFamily:"'Hiragino Kaku Gothic ProN','Noto Sans JP',sans-serif" },
+  center:  { display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100vh", background:"#f8fafc" },
+  header:  { background:"linear-gradient(135deg,#0c4a6e 0%,#0369a1 100%)", color:"#fff", padding:"16px 20px", display:"flex", justifyContent:"space-between", alignItems:"center", boxShadow:"0 2px 8px rgba(3,105,161,0.3)" },
+  htitle:  { fontSize:19, fontWeight:700, letterSpacing:1 },
+  hsub:    { fontSize:11, opacity:0.75, marginTop:2 },
+  savedBadge: { background:"rgba(255,255,255,0.2)", borderRadius:20, padding:"3px 10px", fontSize:12, fontWeight:600 },
+  tabBar:  { display:"flex", background:"#fff", borderBottom:"2px solid #e2e8f0", position:"sticky", top:0, zIndex:10, boxShadow:"0 1px 4px rgba(0,0,0,0.06)" },
+  tabBtn:  { flex:1, padding:"8px 2px", border:"none", background:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", color:"#94a3b8", fontSize:13, fontWeight:500, borderBottom:"2px solid transparent", marginBottom:-2, transition:"all 0.2s" },
+  tabOn:   { color:"#0369a1", borderBottomColor:"#0369a1", fontWeight:700 },
+  body:    { padding:"0 12px" },
+  sec:     { paddingTop:4 },
+  alertBox:{ background:"#fef2f2", border:"2px solid #dc2626", borderRadius:10, padding:"12px 14px", marginBottom:4, color:"#dc2626", fontSize:13 },
+  tempRow: { display:"flex", alignItems:"stretch", borderBottom:"1px solid #f1f5f9" },
+  tempName:{ width:64, flexShrink:0, padding:"10px 8px", fontSize:12, fontWeight:700, color:"#0369a1", display:"flex", flexDirection:"column", justifyContent:"center", borderRight:"1px solid #f1f5f9" },
+  textarea:{ width:"100%", minHeight:80, padding:12, border:"1.5px solid #e2e8f0", borderRadius:12, fontSize:14, color:"#0f172a", background:"#fff", resize:"none", outline:"none", boxSizing:"border-box", fontFamily:"inherit" },
+  textInput:{ width:"100%", padding:"12px 14px", border:"1.5px solid #e2e8f0", borderRadius:12, fontSize:15, color:"#0f172a", background:"#fff", outline:"none", boxSizing:"border-box", fontFamily:"inherit" },
+  th:      { textAlign:"center", fontSize:12, fontWeight:700, color:"#64748b" },
+  tdName:  { padding:"12px 12px", fontSize:13, color:"#334155", lineHeight:1.5 },
+  sel:     { width:"100%", padding:"8px 4px", borderRadius:8, border:"1.5px solid #e2e8f0", fontSize:13, background:"#f8fafc", color:"#0f172a", outline:"none" },
+  cancelBtn:{ background:"#f1f5f9", border:"1px solid #e2e8f0", borderRadius:8, padding:"10px 14px", fontSize:14, cursor:"pointer", color:"#64748b", flexShrink:0 },
+  stampOn: { width:84, height:84, borderRadius:"50%", background:"#dc2626", color:"#fff", border:"3px solid #dc2626", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", fontSize:14, fontWeight:700, cursor:"pointer", lineHeight:1.5, textAlign:"center" },
+  stampOff:{ width:84, height:84, borderRadius:"50%", background:"#fff", color:"#94a3b8", border:"3px dashed #cbd5e1", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", fontSize:11, cursor:"pointer", lineHeight:1.6, textAlign:"center" },
+  hrow:    { display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, color:"#334155", padding:"5px 0", borderBottom:"1px solid #f1f5f9" },
+  listRow: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px", borderBottom:"1px solid #f1f5f9", cursor:"pointer" },
+  nodata:  { textAlign:"center", color:"#94a3b8", padding:24, fontSize:14, background:"#fff", borderRadius:12, margin:"8px 0" },
+  healthCard:      { background:"#fff", borderRadius:12, overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.08)", marginBottom:12 },
+  healthCardHeader:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px", background:"#f8fafc", borderBottom:"1px solid #e2e8f0" },
+};
